@@ -17,6 +17,7 @@
 CREATE TABLE IF NOT EXISTS "users" (
   "id" TEXT PRIMARY KEY,
   "email" TEXT UNIQUE NOT NULL,
+  "password" TEXT,
   "name" TEXT,
   "credits" DOUBLE PRECISION DEFAULT 0,
   "createdAt" TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -87,17 +88,10 @@ CREATE INDEX IF NOT EXISTS "usage_service_idx" ON "usage"("service");
 -- ============================================
 -- TEST DATA (Optional)
 -- ============================================
--- Uncomment to insert test user and sessions
-
--- INSERT INTO "users" ("id", "email", "name", "credits") 
--- VALUES ('user-1', 'test@addisdub.com', 'Test User', 100)
--- ON CONFLICT ("email") DO NOTHING;
-
--- INSERT INTO "dubbing_sessions" ("id", "userId", "youtubeUrl", "videoId", "title", "status")
--- VALUES 
---   ('session-1', 'user-1', 'https://youtube.com/watch?v=test1', 'test1', 'Test Video 1', 'completed'),
---   ('session-2', 'user-1', 'https://youtube.com/watch?v=test2', 'test2', 'Test Video 2', 'processing')
--- ON CONFLICT ("id") DO NOTHING;
+-- Demo user for testing (password: demo123456)
+INSERT INTO "users" ("id", "email", "password", "name", "credits") 
+VALUES ('demo-user-1', 'demo@addisdub.com', '$2a$10$W3l8fHvWCKDDDz.P6IGNN.CjHCmRZAGLPsLp7Xe3Kpx1AkfILEi8K', 'Demo User', 100)
+ON CONFLICT ("email") DO NOTHING;
 
 -- ============================================
 -- VERIFY TABLES
@@ -107,3 +101,4 @@ CREATE INDEX IF NOT EXISTS "usage_service_idx" ON "usage"("service");
 -- SELECT * FROM "dubbing_sessions";
 -- SELECT * FROM "audio_segments";
 -- SELECT * FROM "usage";
+

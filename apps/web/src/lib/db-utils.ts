@@ -2,12 +2,18 @@
  * Database utilities for AddisDub
  */
 
-import { db } from './db';
+async function getDb() {
+  const db = await import('./db').then(m => m.default);
+  return db;
+}
 
 /**
  * Get user with their recent sessions
  */
 export async function getUserWithSessions(userId: string) {
+  const db = await getDb();
+  if (!db) throw new Error('Database not available');
+  
   return db.user.findUnique({
     where: { id: userId },
     include: {
@@ -28,6 +34,9 @@ export async function getUserWithSessions(userId: string) {
  * Get user credits
  */
 export async function getUserCredits(userId: string) {
+  const db = await getDb();
+  if (!db) throw new Error('Database not available');
+  
   const user = await db.user.findUnique({
     where: { id: userId },
     select: { credits: true },
@@ -39,6 +48,9 @@ export async function getUserCredits(userId: string) {
  * Deduct credits from user
  */
 export async function deductCredits(userId: string, amount: number) {
+  const db = await getDb();
+  if (!db) throw new Error('Database not available');
+  
   return db.user.update({
     where: { id: userId },
     data: { credits: { decrement: amount } },
@@ -54,6 +66,9 @@ export async function createDubbingSession(
   videoId?: string,
   title?: string
 ) {
+  const db = await getDb();
+  if (!db) throw new Error('Database not available');
+  
   return db.dubbingSession.create({
     data: {
       userId,
@@ -69,6 +84,9 @@ export async function createDubbingSession(
  * Get session with all segments
  */
 export async function getSessionWithSegments(sessionId: string) {
+  const db = await getDb();
+  if (!db) throw new Error('Database not available');
+  
   return db.dubbingSession.findUnique({
     where: { id: sessionId },
     include: {
@@ -88,6 +106,9 @@ export async function updateSessionStatus(
   status: string,
   progress?: number
 ) {
+  const db = await getDb();
+  if (!db) throw new Error('Database not available');
+  
   const data: any = { status };
   if (progress !== undefined) {
     data.progress = progress;
@@ -111,6 +132,9 @@ export async function createAudioSegments(
     sourceText?: string;
   }>
 ) {
+  const db = await getDb();
+  if (!db) throw new Error('Database not available');
+  
   return db.audioSegment.createMany({
     data: segments.map((seg) => ({
       sessionId,
@@ -133,6 +157,9 @@ export async function updateAudioSegment(
     status?: string;
   }
 ) {
+  const db = await getDb();
+  if (!db) throw new Error('Database not available');
+  
   return db.audioSegment.update({
     where: { id: segmentId },
     data,
@@ -150,6 +177,9 @@ export async function trackUsage(
   estimatedCost: number,
   provider: string = 'addis-ai'
 ) {
+  const db = await getDb();
+  if (!db) throw new Error('Database not available');
+  
   return db.usage.create({
     data: {
       userId,
@@ -167,6 +197,9 @@ export async function trackUsage(
  * Get user usage statistics
  */
 export async function getUserUsageStats(userId: string, days: number = 30) {
+  const db = await getDb();
+  if (!db) throw new Error('Database not available');
+  
   const startDate = new Date();
   startDate.setDate(startDate.getDate() - days);
 

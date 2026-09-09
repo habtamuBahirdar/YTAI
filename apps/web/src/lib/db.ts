@@ -1,28 +1,30 @@
 /**
  * Prisma Client Setup for AddisDub
  * 
- * To initialize the database:
- * 1. Ensure PostgreSQL is running with your credentials
- * 2. Run: pnpm prisma migrate dev --name init
- * 3. This will create the database and apply migrations
+ * Initialize with: pnpm prisma generate
  */
 
-import { PrismaClient } from '@prisma/client';
+let db: any = null;
 
-const prismaClientSingleton = () => {
-  return new PrismaClient({
-    log: process.env.NODE_ENV === 'development' 
-      ? ['query', 'info', 'warn', 'error']
-      : ['error'],
-  });
-};
+try {
+  const { PrismaClient } = require('@prisma/client');
+  
+  const prismaClientSingleton = () => {
+    return new PrismaClient({
+      log: process.env.NODE_ENV === 'development' 
+        ? ['query', 'info', 'warn', 'error']
+        : ['error'],
+    });
+  };
 
-declare global {
-  var prisma: undefined | ReturnType<typeof prismaClientSingleton>;
+  if (typeof globalThis !== 'undefined') {
+    (globalThis as any).prisma = (globalThis as any).prisma ?? prismaClientSingleton();
+    db = (globalThis as any).prisma;
+  }
+} catch (error) {
+  console.warn('Prisma Client not available during build. This is expected.');
+  db = null;
 }
 
-export const db = globalThis.prisma ?? prismaClientSingleton();
-
-if (process.env.NODE_ENV !== 'production') globalThis.prisma = db;
-
 export default db;
+
