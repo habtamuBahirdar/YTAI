@@ -1,0 +1,77 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: addisdub_postgres
+    environment:
+      POSTGRES_USER: ${DB_USER:-addisdub}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-addisdub_dev_password}
+      POSTGRES_DB: ${DB_NAME:-addisdub_dev}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-addisdub}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: addisdub_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: addisdub_web
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://${DB_USER:-addisdub}:${DB_PASSWORD:-addisdub_dev_password}@postgres:5432/${DB_NAME:-addisdub_dev}
+      REDIS_URL: redis://redis:6379
+      REALTIME_URL: ws://realtime:4000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./apps/web:/app/apps/web
+      - /app/apps/web/node_modules
+      - /app/apps/web/.next
+
+  realtime:
+    build:
+      context: .
+      dockerfile: Dockerfile.realtime
+    container_name: addisdub_realtime
+    ports:
+      - "4000:4000"
+    environment:
+      REALTIME_PORT: 4000
+      REDIS_URL: redis://redis:6379
+    depends_on:
+      - redis
+    volumes:
+      - ./apps/realtime:/app/apps/realtime
+      - /app/apps/realtime/node_modules
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  default:
+    name: addisdub_network

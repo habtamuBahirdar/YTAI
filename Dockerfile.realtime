@@ -1,0 +1,22 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Install pnpm
+RUN npm install -g pnpm@12.3.4
+
+# Copy root files
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+
+# Copy apps
+COPY apps/realtime ./apps/realtime
+
+# Install dependencies
+RUN pnpm install --frozen-lockfile
+
+# Build
+RUN cd apps/realtime && pnpm build
+
+EXPOSE 4000
+
+CMD ["pnpm", "-C", "apps/realtime", "start"]

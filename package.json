@@ -1,21 +1,27 @@
 {
-  "name": "YTAI",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "name": "addisdub",
+  "version": "0.1.0",
+  "description": "Real-time English → Amharic AI dubbing platform",
+  "private": true,
+  "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "pnpm --parallel -r run dev",
+    "dev:web": "pnpm -C apps/web dev",
+    "dev:realtime": "pnpm -C apps/realtime dev",
+    "build": "pnpm -r run build",
+    "build:web": "pnpm -C apps/web build",
+    "build:realtime": "pnpm -C apps/realtime build",
+    "start": "pnpm -r run start",
+    "lint": "pnpm -r run lint",
+    "type-check": "pnpm -r run type-check",
+    "docker:up": "docker-compose up",
+    "docker:down": "docker-compose down",
+    "docker:build": "docker-compose build"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "devEngines": {
-    "packageManager": {
-      "name": "pnpm",
-      "version": "12.3.4",
-      "onFail": "download"
-    }
+  "devDependencies": {
+    "prettier": "^3.1.0",
+    "typescript": "^5"
   },
-  "packageManager": "pnpm@12.3.4",
-  "type": "module"
+  "packageManager": "pnpm@12.3.4"
 }
+
