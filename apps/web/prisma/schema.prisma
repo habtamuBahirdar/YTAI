@@ -1,0 +1,84 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  credits   Float    @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sessions DubbingSession[]
+  usage    Usage[]
+
+  @@map("users")
+}
+
+model DubbingSession {
+  id             String   @id @default(cuid())
+  userId         String
+  youtubeUrl     String
+  videoId        String?
+  title          String?
+  sourceLanguage String   @default("en")
+  targetLanguage String   @default("am")
+  status         String   @default("pending") // pending, processing, completed, failed
+  progress       Float    @default(0)
+  createdAt      DateTime @default(now())
+  completedAt    DateTime?
+
+  user     User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  segments AudioSegment[]
+  usage    Usage[]
+
+  @@index([userId])
+  @@map("dubbing_sessions")
+}
+
+model AudioSegment {
+  id             String   @id @default(cuid())
+  sessionId      String
+  sequence       Int
+  sourceText     String?
+  translatedText String?
+  audioUrl       String?
+  duration       Float?
+  status         String   @default("pending") // pending, processing, completed, failed
+  createdAt      DateTime @default(now())
+
+  session DubbingSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, sequence])
+  @@index([sessionId])
+  @@map("audio_segments")
+}
+
+model Usage {
+  id             String   @id @default(cuid())
+  userId         String
+  sessionId      String?
+  service        String   // STT, TRANSLATION, TTS
+  duration       Float?   // in seconds or minutes depending on service
+  estimatedCost  Float
+  actualCost     Float?
+  provider       String   // addis-ai, etc
+  status         String   @default("pending") // pending, completed, failed
+  createdAt      DateTime @default(now())
+
+  user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session DubbingSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([sessionId])
+  @@map("usage")
+}
