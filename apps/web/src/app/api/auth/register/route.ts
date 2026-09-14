@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import bcryptjs from 'bcryptjs';
 import { z } from 'zod';
+import { getDb, queryUser } from '@/lib/db';
 
 const registerSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
@@ -15,30 +16,16 @@ export async function POST(req: NextRequest) {
     // Validate input
     const { name, email, password } = await registerSchema.parseAsync(body);
 
-    // Lazy load db
-    let db;
-    try {
-      const { default: dbImport } = await import('@/lib/db');
-      db = dbImport;
-    } catch (e) {
+    const client = await getDb();
+    if (!client) {
       return NextResponse.json(
-        { message: 'Database service unavailable' },
-        { status: 503 }
-      );
-    }
-
-    if (!db) {
-      return NextResponse.json(
-        { message: 'Database not initialized' },
+        { message: 'Database not available' },
         { status: 503 }
       );
     }
 
     // Check if user already exists
-    const existingUser = await db.user.findUnique({
-      where: { email },
-    });
-
+    const existingUser = await queryUser(email);
     if (existingUser) {
       return NextResponse.json(
         { message: 'Email already registered' },
@@ -50,14 +37,14 @@ export async function POST(req: NextRequest) {
     const hashedPassword = await bcryptjs.hash(password, 10);
 
     // Create user
-    const user = await db.user.create({
-      data: {
-        email,
-        name,
-        password: hashedPassword,
-        credits: 100, // Welcome bonus
-      },
-    });
+    const result = await client.query(
+      `INSERT INTO "users" (email, name, password, credits)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, email, name`,
+      [email, name, hashedPassword, 100]
+    );
+
+    const user = result.rows[0];
 
     return NextResponse.json(
       {

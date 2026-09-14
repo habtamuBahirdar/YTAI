@@ -2,16 +2,17 @@ import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import bcryptjs from "bcryptjs";
 import { z } from "zod";
+import { queryUser } from "@/lib/db";
 
 const loginSchema = z.object({
   email: z.string().email("Invalid email address"),
   password: z.string().min(6, "Password must be at least 6 characters"),
 });
 
-// Lazy load db to avoid build-time issues
-async function getDb() {
-  const { default: db } = await import("@/lib/db");
-  return db;
+// Ensure AUTH_SECRET is defined
+const authSecret = process.env.AUTH_SECRET;
+if (!authSecret) {
+  throw new Error("Missing AUTH_SECRET environment variable");
 }
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
@@ -26,20 +27,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         try {
           const { email, password } = await loginSchema.parseAsync(credentials);
 
-          // Get database instance
-          const db = await getDb();
-          
-          if (!db) {
-            console.error("Database not available");
-            return null;
-          }
-
-          // Find user by email
-          const user = await db.user.findUnique({
-            where: { email },
-          });
+          // Query user from database
+          const user = await queryUser(email);
 
           if (!user) {
+            console.log(`❌ User not found: ${email}`);
             return null;
           }
 
@@ -47,9 +39,11 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           const passwordMatch = await bcryptjs.compare(password, user.password || "");
 
           if (!passwordMatch) {
+            console.log(`❌ Password mismatch for user: ${email}`);
             return null;
           }
 
+          console.log(`✅ User authenticated: ${email}`);
           return {
             id: user.id,
             email: user.email,
@@ -80,17 +74,17 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       return session;
     },
   },
-  secret: process.env.AUTH_SECRET,
+  secret: authSecret,
   session: {
     strategy: "jwt",
     maxAge: 30 * 24 * 60 * 60, // 30 days
   },
   events: {
     async signIn({ user }) {
-      console.log(`User signed in: ${user.email}`);
+      console.log(`✅ Session started for: ${user.email}`);
     },
     async signOut() {
-      console.log("User signed out");
+      console.log("📤 User signed out");
     },
   },
 });

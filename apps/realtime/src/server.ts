@@ -3,6 +3,7 @@ import { createServer } from 'http';
 import { config } from 'dotenv';
 import { StreamingPipeline } from './pipeline/streaming-pipeline';
 import { AudioBuffer, LatencyTracker } from './audio/buffer';
+import { processSegmentWithAddisAI } from './services/segment-processor';
 
 config();
 
@@ -23,6 +24,9 @@ interface SessionData {
   pipeline?: StreamingPipeline;
   buffer?: AudioBuffer;
   isProcessing: boolean;
+  voiceId: string;
+  totalCost: number;
+  processedSegments: number;
 }
 
 const sessions = new Map<string, SessionData>();
@@ -47,12 +51,12 @@ function broadcast(message: any, excludeWs?: WebSocket): void {
 }
 
 wss.on('connection', (ws: WebSocket) => {
-  console.log('New WebSocket connection');
+  console.log('✅ New WebSocket connection');
 
   ws.on('message', (data: Buffer) => {
     try {
       const message = JSON.parse(data.toString());
-      console.log('Received message type:', message.type);
+      console.log('📨 Received message type:', message.type);
 
       switch (message.type) {
         case 'session.start':
@@ -99,7 +103,7 @@ wss.on('connection', (ws: WebSocket) => {
     for (const [sessionId, session] of sessions.entries()) {
       if (session.ws === ws) {
         sessions.delete(sessionId);
-        console.log(`Session ${sessionId} closed`);
+        console.log(`❌ Session ${sessionId} closed`);
         
         // Notify others
         broadcast({
@@ -111,7 +115,7 @@ wss.on('connection', (ws: WebSocket) => {
   });
 
   ws.on('error', (error) => {
-    console.error('WebSocket error:', error);
+    console.error('⚠️  WebSocket error:', error);
   });
 });
 
@@ -119,7 +123,7 @@ wss.on('connection', (ws: WebSocket) => {
  * Handle session start
  */
 function handleSessionStart(ws: WebSocket, message: any): void {
-  const { sessionId, userId, youtubeUrl } = message;
+  const { sessionId, userId, youtubeUrl, voiceId = 'am-hamen' } = message;
 
   if (!sessionId || !userId) {
     sendMessage(ws, {
@@ -134,6 +138,7 @@ function handleSessionStart(ws: WebSocket, message: any): void {
     ws,
     userId,
     sessionId,
+    voiceId,
     createdAt: new Date(),
     pipeline: new StreamingPipeline({
       maxConcurrentSegments: 3,
@@ -142,6 +147,8 @@ function handleSessionStart(ws: WebSocket, message: any): void {
       targetSegmentSeconds: 5,
     }),
     isProcessing: false,
+    totalCost: 0,
+    processedSegments: 0,
   };
 
   sessions.set(sessionId, session);
@@ -151,10 +158,280 @@ function handleSessionStart(ws: WebSocket, message: any): void {
     sessionId,
     timestamp: new Date().toISOString(),
     videoUrl: youtubeUrl,
+    voiceId,
   });
 
-  console.log(`Session ${sessionId} started for user ${userId}`);
+  console.log(`✅ Session ${sessionId} started for user ${userId}`);
+  console.log(`🎙️  Voice: ${voiceId}`);
 }
+
+/**
+ * Handle audio processing with Addis AI integration
+ */
+async function handleSessionProcess(ws: WebSocket, message: any): Promise<void> {
+  const { sessionId, audioBuffer: audioBase64, sequence = 1 } = message;
+  const session = sessions.get(sessionId);
+
+  if (!session) {
+    sendMessage(ws, {
+      type: 'error',
+      message: 'Session not found',
+    });
+    return;
+  }
+
+  if (session.isProcessing) {
+    sendMessage(ws, {
+      type: 'error',
+      message: 'Session already processing',
+    });
+    return;
+  }
+
+  try {
+    session.isProcessing = true;
+
+    sendMessage(ws, {
+      type: 'session.processing',
+      sessionId,
+      sequence,
+      timestamp: new Date().toISOString(),
+    });
+
+    console.log(`🔄 Processing segment ${sequence} with Addis AI...`);
+
+    // Process segment through Addis AI pipeline
+    const result = await processSegmentWithAddisAI(
+      sequence,
+      audioBase64,
+      session.voiceId,
+      {
+        onTranscript: (seq, text) => {
+          sendMessage(ws, {
+            type: 'transcript',
+            sessionId,
+            sequence: seq,
+            text,
+            timestamp: new Date().toISOString(),
+          });
+          console.log(`📝 [${seq}] Transcript: ${text}`);
+        },
+
+        onTranslation: (seq, text) => {
+          sendMessage(ws, {
+            type: 'translation',
+            sessionId,
+            sequence: seq,
+            text,
+            timestamp: new Date().toISOString(),
+          });
+          console.log(`🌍 [${seq}] Translation: ${text}`);
+        },
+
+        onAudioReady: (seq, audioB64) => {
+          sendMessage(ws, {
+            type: 'audio.ready',
+            sessionId,
+            sequence: seq,
+            audio: audioB64,
+            timestamp: new Date().toISOString(),
+          });
+          console.log(`🔊 [${seq}] Audio ready (${audioB64.length} bytes)`);
+        },
+
+        onProgress: (stage, progress) => {
+          sendMessage(ws, {
+            type: 'progress',
+            sessionId,
+            stage,
+            progress,
+            timestamp: new Date().toISOString(),
+          });
+        },
+
+        onError: (seq, error) => {
+          sendMessage(ws, {
+            type: 'segment.error',
+            sessionId,
+            sequence: seq,
+            error,
+            timestamp: new Date().toISOString(),
+          });
+        },
+      }
+    );
+
+    // Update session stats
+    session.totalCost += result.cost.total;
+    session.processedSegments += 1;
+
+    sendMessage(ws, {
+      type: 'segment.complete',
+      sessionId,
+      sequence: result.sequence,
+      latency: result.latency,
+      cost: result.cost,
+      stats: {
+        totalCost: session.totalCost,
+        processedSegments: session.processedSegments,
+      },
+      timestamp: new Date().toISOString(),
+    });
+
+    console.log(`✅ Segment ${sequence} completed`);
+    console.log(`   STT: ${result.latency.stt}ms | Translation: ${result.latency.translation}ms | TTS: ${result.latency.tts}ms`);
+    console.log(`   Total latency: ${result.latency.total}ms`);
+    console.log(`   Cost: $${result.cost.total.toFixed(6)} (Total: $${session.totalCost.toFixed(6)})`);
+
+    session.isProcessing = false;
+  } catch (error) {
+    session.isProcessing = false;
+    const errorMessage = error instanceof Error ? error.message : 'Processing failed';
+    
+    sendMessage(ws, {
+      type: 'session.error',
+      sessionId,
+      sequence,
+      error: errorMessage,
+      timestamp: new Date().toISOString(),
+    });
+
+    console.error(`❌ Segment ${sequence} failed:`, errorMessage);
+  }
+}
+
+/**
+ * Handle session pause
+ */
+function handleSessionPause(ws: WebSocket, message: any): void {
+  const { sessionId } = message;
+  const session = sessions.get(sessionId);
+
+  if (!session) {
+    sendMessage(ws, {
+      type: 'error',
+      message: 'Session not found',
+    });
+    return;
+  }
+
+  sendMessage(ws, {
+    type: 'session.paused',
+    sessionId,
+    timestamp: new Date().toISOString(),
+  });
+
+  console.log(`⏸️  Session ${sessionId} paused`);
+}
+
+/**
+ * Handle session resume
+ */
+function handleSessionResume(ws: WebSocket, message: any): void {
+  const { sessionId } = message;
+  const session = sessions.get(sessionId);
+
+  if (!session) {
+    sendMessage(ws, {
+      type: 'error',
+      message: 'Session not found',
+    });
+    return;
+  }
+
+  sendMessage(ws, {
+    type: 'session.resumed',
+    sessionId,
+    timestamp: new Date().toISOString(),
+  });
+
+  console.log(`▶️  Session ${sessionId} resumed`);
+}
+
+/**
+ * Handle session stop
+ */
+function handleSessionStop(ws: WebSocket, message: any): void {
+  const { sessionId } = message;
+  const session = sessions.get(sessionId);
+
+  if (!session) {
+    sendMessage(ws, {
+      type: 'error',
+      message: 'Session not found',
+    });
+    return;
+  }
+
+  // Clean up pipeline
+  if (session.pipeline) {
+    session.pipeline.reset();
+  }
+
+  console.log(`⏹️  Session ${sessionId} stopped`);
+  console.log(`   Processed: ${session.processedSegments} segments`);
+  console.log(`   Total cost: $${session.totalCost.toFixed(6)}`);
+
+  sessions.delete(sessionId);
+
+  sendMessage(ws, {
+    type: 'session.stopped',
+    sessionId,
+    stats: {
+      processedSegments: session.processedSegments,
+      totalCost: session.totalCost,
+    },
+    timestamp: new Date().toISOString(),
+  });
+}
+
+/**
+ * Handle seek/replay to specific segment
+ */
+function handleSessionSeek(ws: WebSocket, message: any): void {
+  const { sessionId, sequence } = message;
+  const session = sessions.get(sessionId);
+
+  if (!session) {
+    sendMessage(ws, {
+      type: 'error',
+      message: 'Session not found',
+    });
+    return;
+  }
+
+  sendMessage(ws, {
+    type: 'segment.seek',
+    sessionId,
+    sequence,
+    timestamp: new Date().toISOString(),
+  });
+
+  console.log(`⏩ Session ${sessionId} seeking to segment ${sequence}`);
+}
+
+// Server startup
+server.listen(PORT, () => {
+  console.log(`\n🚀 Realtime server started`);
+  console.log(`📍 WebSocket: ws://localhost:${PORT}`);
+  console.log(`🤖 AI Service: Addis AI (STT + Translation + TTS)`);
+  console.log(`📊 Max concurrent segments: 3`);
+  console.log(`📦 Buffer size: 2-5 segments`);
+  console.log(`⏱️  Target segment duration: 5 seconds`);
+  console.log(`🎙️  Available voices: am-hamen (male), am-abeba (female)\n`);
+});
+
+// Periodic stats logging
+setInterval(() => {
+  const activeSessions = Array.from(sessions.values()).filter(s => s.isProcessing);
+  if (activeSessions.length > 0) {
+    console.log(`\n📈 Active sessions: ${activeSessions.length}`);
+    activeSessions.forEach(session => {
+      console.log(`   ${session.sessionId}: ${session.processedSegments} segments, Cost: $${session.totalCost.toFixed(6)}`);
+    });
+  }
+}, 10000);
+
 
 /**
  * Handle audio processing
