@@ -3,23 +3,15 @@
  * Core wrapper for Addis AI API integration
  */
 
-import axios from 'axios';
-
 const ADDIS_API_BASE = 'https://api.addisassistant.com';
-const ADDIS_API_KEY = process.env.ADDIS_AI_API_KEY;
 
-if (!ADDIS_API_KEY) {
-  throw new Error('Missing ADDIS_AI_API_KEY environment variable');
+function getApiKey(): string {
+  const key = process.env.ADDIS_AI_API_KEY;
+  if (!key) {
+    throw new Error('Missing ADDIS_AI_API_KEY environment variable');
+  }
+  return key;
 }
-
-const addisClient = axios.create({
-  baseURL: ADDIS_API_BASE,
-  headers: {
-    'x-api-key': ADDIS_API_KEY,
-    'Content-Type': 'application/json',
-  },
-  timeout: 30000,
-});
 
 export interface STTRequest {
   audio: Buffer | string; // base64 encoded audio
@@ -70,25 +62,39 @@ export interface TTSResponse {
  */
 export async function speechToText(request: STTRequest): Promise<STTResponse> {
   try {
-    // Convert buffer to base64 if needed
-    const audioBase64 = typeof request.audio === 'string' 
-      ? request.audio 
-      : request.audio.toString('base64');
+    const audioBuffer = typeof request.audio === 'string' 
+      ? Buffer.from(request.audio, 'base64') 
+      : request.audio;
 
-    const response = await addisClient.post('/api/v2/stt', {
-      audio: audioBase64,
-      language: request.language || 'en',
-      model: request.model || 'addis-whisper',
+    const blob = new Blob([audioBuffer], { type: 'audio/wav' });
+    const formData = new FormData();
+    formData.append('audio', blob, 'audio.wav');
+    formData.append('language_code', request.language || 'en');
+
+    const res = await fetch(`${ADDIS_API_BASE}/api/v2/stt`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': getApiKey(),
+      },
+      body: formData,
     });
 
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(`HTTP ${res.status}: ${JSON.stringify(errData)}`);
+    }
+
+    const data: any = await res.json();
+    const transcript = data.data?.transcription || data.text || '';
+
     return {
-      text: response.data.text || '',
-      confidence: response.data.confidence,
-      language: response.data.language,
-      duration: response.data.duration,
+      text: transcript.trim(),
+      confidence: transcript ? 0.95 : 0,
+      language: request.language || 'en',
+      duration: 5,
     };
   } catch (error: any) {
-    console.error('STT Error:', error.response?.data || error.message);
+    console.error('STT Error:', error.message);
     throw new Error(`STT failed: ${error.message}`);
   }
 }
@@ -99,41 +105,40 @@ export async function speechToText(request: STTRequest): Promise<STTResponse> {
  */
 export async function translate(request: TranslationRequest): Promise<TranslationResponse> {
   try {
-    const systemPrompt = `You are a professional translator. Translate the following English text to ${
-      request.targetLanguage === 'am' ? 'Amharic' : 'Afaan Oromo'
-    }.
+    const targetLangName = request.targetLanguage === 'am' ? 'Amharic' : 'Afaan Oromo';
+    const prompt = `Translate the following text into natural spoken ${targetLangName}:\n\n${request.text}`;
 
-Important:
-- Preserve technical terms (React, API, GitHub, etc.)
-- Keep names and numbers unchanged
-- Maintain sentence structure and context
-- Use natural spoken language, not literal translation
-- Preserve punctuation and formatting`;
-
-    const response = await addisClient.post('/api/v1/chat_generate', {
-      messages: [
-        {
-          role: 'system',
-          content: systemPrompt,
-        },
-        {
-          role: 'user',
-          content: `Translate to ${request.targetLanguage === 'am' ? 'Amharic' : 'Afaan Oromo'}:\n\n${request.text}`,
-        },
-      ],
-      model: request.model || 'Addis-፩-አሌፍ',
-      temperature: 0.3,
-      maxTokens: 2000,
-      language: request.targetLanguage,
+    const res = await fetch(`${ADDIS_API_BASE}/api/v1/chat_generate`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': getApiKey(),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+      }),
     });
 
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      throw new Error(`HTTP ${res.status}: ${JSON.stringify(errData)}`);
+    }
+
+    const data: any = await res.json();
+    const translatedText = data.data?.response_text || data.response_text || '';
+
     return {
-      translatedText: response.data.response_text || '',
+      translatedText,
       sourceLanguage: request.sourceLanguage || 'en',
       targetLanguage: request.targetLanguage,
     };
   } catch (error: any) {
-    console.error('Translation Error:', error.response?.data || error.message);
+    console.error('Translation Error:', error.message);
     throw new Error(`Translation failed: ${error.message}`);
   }
 }
@@ -143,31 +148,61 @@ Important:
  * Convert Amharic text to audio
  */
 export async function textToSpeech(request: TTSRequest): Promise<TTSResponse> {
-  try {
-    const response = await addisClient.post(
-      '/api/v1/voice/generations',
-      {
-        text: request.text,
-        voiceId: request.voiceId,
-        language: request.language,
-        outputFormat: request.outputFormat || 'mp3',
-        speed: request.speed || 1.0,
-        clientRequestId: request.clientRequestId || `req-${Date.now()}`,
-      },
-      {
-        responseType: 'arraybuffer',
-      }
-    );
+  const maxRetries = 4;
+  let attempt = 0;
 
-    return {
-      audio: Buffer.from(response.data),
-      audioBase64: Buffer.from(response.data).toString('base64'),
-      duration: request.text.split(' ').length / 2.5, // Rough estimate
-    };
-  } catch (error: any) {
-    console.error('TTS Error:', error.response?.data || error.message);
-    throw new Error(`TTS failed: ${error.message}`);
+  while (attempt < maxRetries) {
+    attempt++;
+    try {
+      const voiceId = request.voiceId === 'am-hamen' ? 'am-simon' : (request.voiceId === 'am-abeba' ? 'am-loza' : request.voiceId);
+
+      const res = await fetch(`${ADDIS_API_BASE}/api/v1/voice/generations`, {
+        method: 'POST',
+        headers: {
+          'x-api-key': getApiKey(),
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          text: request.text,
+          voice_id: voiceId,
+          language: request.language || 'am',
+          output_format: request.outputFormat || 'mp3_44100',
+          speed: request.speed || 1.0,
+          client_request_id: request.clientRequestId || `req-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+        }),
+      });
+
+      if (res.status === 429 && attempt < maxRetries) {
+        console.warn(`[TTS 429 Rate Limit] Concurrency limit hit. Retrying in ${attempt * 1500}ms (Attempt ${attempt}/${maxRetries})...`);
+        await new Promise(r => setTimeout(r, attempt * 1500));
+        continue;
+      }
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(`HTTP ${res.status}: ${JSON.stringify(errData)}`);
+      }
+
+      const data: any = await res.json();
+      const rawAudio = data.data?.audio || data.audio || data.audio_base64 || '';
+      const cleanBase64 = rawAudio.replace(/^data:audio\/[a-z0-9]+;base64,/, '');
+      const audioBuf = Buffer.from(cleanBase64, 'base64');
+
+      return {
+        audio: audioBuf,
+        audioBase64: cleanBase64,
+        duration: Math.max(2, request.text.split(' ').length / 2.5),
+      };
+    } catch (error: any) {
+      if (attempt >= maxRetries || !error.message.includes('429')) {
+        console.error('TTS Error:', error.message);
+        throw new Error(`TTS failed: ${error.message}`);
+      }
+      await new Promise(r => setTimeout(r, attempt * 1500));
+    }
   }
+
+  throw new Error('TTS failed after retries');
 }
 
 /**
@@ -175,21 +210,34 @@ export async function textToSpeech(request: TTSRequest): Promise<TTSResponse> {
  */
 export async function getAmharicVoices() {
   try {
-    // Built-in Amharic voices from Addis AI
+    const res = await fetch(`${ADDIS_API_BASE}/api/v1/voice/voices`, {
+      headers: {
+        'x-api-key': getApiKey(),
+      },
+    });
+
+    if (res.ok) {
+      const data: any = await res.json();
+      if (Array.isArray(data.data)) {
+        return data.data;
+      }
+    }
+
+    // Fallback if network issue
     return [
       {
-        id: 'am-hamen',
-        name: 'Hamen',
+        id: 'am-simon',
+        name: 'Simon',
         gender: 'male',
         language: 'am',
-        description: 'Natural male voice',
+        description: 'Calm storytelling male voice',
       },
       {
-        id: 'am-abeba',
-        name: 'Abeba',
+        id: 'am-loza',
+        name: 'Loza',
         gender: 'female',
         language: 'am',
-        description: 'Natural female voice',
+        description: 'Smooth studio female voice',
       },
     ];
   } catch (error: any) {

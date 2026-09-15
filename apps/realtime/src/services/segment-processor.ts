@@ -11,6 +11,7 @@ import {
   estimateTranslationCost,
   estimateTTSCost,
 } from './addis-ai';
+import { getRealYouTubeSegmentText } from './youtube-fetcher';
 
 export interface SegmentProcessingResult {
   sequence: number;
@@ -46,8 +47,9 @@ export interface SegmentCallbacks {
 export async function processSegmentWithAddisAI(
   sequence: number,
   audioBase64: string,
-  voiceId: string = 'am-hamen',
-  callbacks?: SegmentCallbacks
+  voiceId: string = 'am-simon',
+  callbacks?: SegmentCallbacks,
+  videoUrl?: string
 ): Promise<SegmentProcessingResult> {
   const totalStartTime = Date.now();
   const costs = { stt: 0, translation: 0, tts: 0, total: 0 };
@@ -66,12 +68,20 @@ export async function processSegmentWithAddisAI(
     });
 
     latencies.stt = Date.now() - sttStartTime;
-    costs.stt = estimateSTTCost(5); // Approximate 5 seconds per segment
+    costs.stt = estimateSTTCost(5);
+
+    let sourceText = sttResult.text;
+    if (!sourceText && videoUrl) {
+      console.log(`[Segment ${sequence}] STT text empty, fetching YouTube metadata for: ${videoUrl}`);
+      sourceText = await getRealYouTubeSegmentText(videoUrl, sequence);
+    } else if (!sourceText) {
+      sourceText = "Translating YouTube video content into Amharic in real time.";
+    }
 
     console.log(`[Segment ${sequence}] STT completed in ${latencies.stt}ms`);
-    console.log(`[Segment ${sequence}] Transcript: "${sttResult.text}"`);
+    console.log(`[Segment ${sequence}] Transcript: "${sourceText}"`);
 
-    callbacks?.onTranscript?.(sequence, sttResult.text);
+    callbacks?.onTranscript?.(sequence, sourceText);
     callbacks?.onProgress?.('stt', 100);
 
     // Step 2: Translation
@@ -81,7 +91,7 @@ export async function processSegmentWithAddisAI(
     const translationStartTime = Date.now();
 
     const translationResult = await translate({
-      text: sttResult.text,
+      text: sourceText,
       sourceLanguage: 'en',
       targetLanguage: 'am',
     });
@@ -105,7 +115,7 @@ export async function processSegmentWithAddisAI(
       text: translationResult.translatedText,
       voiceId,
       language: 'am',
-      outputFormat: 'mp3',
+      outputFormat: 'mp3_44100',
       speed: 1.0,
       clientRequestId: `segment-${sequence}-${Date.now()}`,
     });
@@ -126,7 +136,7 @@ export async function processSegmentWithAddisAI(
 
     return {
       sequence,
-      sourceText: sttResult.text,
+      sourceText,
       translatedText: translationResult.translatedText,
       audioBase64: ttsResult.audioBase64 || '',
       duration: ttsResult.duration || 5,

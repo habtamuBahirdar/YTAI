@@ -225,8 +225,10 @@ export class RealtimeClient {
           this.callbacks.onCompleted?.(message.sessionId!);
           break;
 
+        case 'segment.error':
+        case 'session.error':
         case 'error':
-          this.callbacks.onError?.(message.message || 'Unknown error');
+          this.callbacks.onError?.(message.error || message.message || 'Unknown error');
           break;
 
         default:

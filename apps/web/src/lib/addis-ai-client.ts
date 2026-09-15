@@ -18,9 +18,10 @@ class AddisAIClient {
     this.apiKey = config.apiKey;
     
     this.client = axios.create({
-      baseURL: config.baseUrl || 'https://api.addisai.com',
+      baseURL: config.baseUrl || 'https://api.addisassistant.com',
       headers: {
-        'Authorization': `Bearer ${this.apiKey}`,
+        'x-api-key': this.apiKey,
+        'Content-Type': 'application/json',
         'User-Agent': 'AddisDub/1.0',
       },
       timeout: 30000,
@@ -30,14 +31,14 @@ class AddisAIClient {
     this.client.interceptors.response.use(
       response => response,
       error => {
-        console.error('Addis AI API Error:', error.message);
+        console.error('Addis AI API Error:', error.response?.data || error.message);
         throw error;
       }
     );
   }
 
   /**
-   * Speech-to-Text: Convert audio to English transcript
+   * Speech-to-Text: Convert audio buffer to transcript using Addis AI
    */
   async speechToText(audioBuffer: Buffer, options?: { language?: string }): Promise<{
     text: string;
@@ -45,28 +46,38 @@ class AddisAIClient {
     duration: number;
   }> {
     try {
-      const FormData = require('form-data');
-      const form = new FormData();
-      form.append('audio', audioBuffer, 'audio.wav');
-      form.append('language', options?.language || 'en');
+      const blob = new Blob([audioBuffer], { type: 'audio/wav' });
+      const formData = new FormData();
+      formData.append('audio', blob, 'audio.wav');
+      formData.append('language_code', options?.language || 'en');
 
-      const response = await this.client.post('/v1/stt', form, {
-        headers: form.getHeaders(),
+      const response = await fetch('https://api.addisassistant.com/api/v2/stt', {
+        method: 'POST',
+        headers: {
+          'x-api-key': this.apiKey,
+        },
+        body: formData,
       });
 
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(`HTTP ${response.status}: ${JSON.stringify(errData)}`);
+      }
+
+      const data: any = await response.json();
       return {
-        text: response.data.text,
-        confidence: response.data.confidence || 0.95,
-        duration: response.data.duration || 0,
+        text: data.data?.transcription || data.text || '',
+        confidence: 0.95,
+        duration: 5,
       };
-    } catch (error) {
-      console.error('STT Error:', error);
-      throw new Error('Failed to transcribe audio');
+    } catch (error: any) {
+      console.error('STT Error:', error.message);
+      throw new Error(`Failed to transcribe audio: ${error.message}`);
     }
   }
 
   /**
-   * Translation: Translate English text to Amharic
+   * Translation: Translate English text to Amharic using Addis AI LLM
    */
   async translate(text: string, options?: {
     sourceLanguage?: string;
@@ -76,24 +87,31 @@ class AddisAIClient {
     confidence: number;
   }> {
     try {
-      const response = await this.client.post('/v1/translate', {
-        text,
-        source_language: options?.sourceLanguage || 'en',
-        target_language: options?.targetLanguage || 'am',
+      const targetLang = options?.targetLanguage || 'am';
+      const targetLangName = targetLang === 'am' ? 'Amharic' : 'Afaan Oromo';
+      const prompt = `Translate the following text into natural spoken ${targetLangName}:\n\n${text}`;
+
+      const response = await this.client.post('/api/v1/chat_generate', {
+        messages: [
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
       });
 
       return {
-        translatedText: response.data.translated_text,
-        confidence: response.data.confidence || 0.9,
+        translatedText: response.data.data?.response_text || response.data.response_text || '',
+        confidence: 0.9,
       };
-    } catch (error) {
-      console.error('Translation Error:', error);
-      throw new Error('Failed to translate text');
+    } catch (error: any) {
+      console.error('Translation Error:', error.response?.data || error.message);
+      throw new Error(`Failed to translate text: ${error.message}`);
     }
   }
 
   /**
-   * Text-to-Speech: Convert Amharic text to audio
+   * Text-to-Speech: Convert Amharic text to audio using Addis AI TTS
    */
   async textToSpeech(text: string, options?: {
     voice?: string;
@@ -105,28 +123,36 @@ class AddisAIClient {
     format: string;
   }> {
     try {
+      let voiceId = options?.voice || 'am-simon';
+      if (voiceId === 'am-hamen') voiceId = 'am-simon';
+      if (voiceId === 'am-abeba') voiceId = 'am-loza';
+
       const response = await this.client.post(
-        '/v1/tts',
+        '/api/v1/voice/generations',
         {
           text,
-          voice: options?.voice || 'am-ET-Neural2-A',
+          voice_id: voiceId,
+          language: 'am',
+          output_format: 'mp3_44100',
           speed: options?.speed || 1.0,
-          pitch: options?.pitch || 0,
-          audio_encoding: 'MP3',
-        },
-        {
-          responseType: 'arraybuffer',
+          client_request_id: `web-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
         }
       );
 
+      const data = response.data;
+      const rawAudio = data.data?.audio || data.audio || data.audio_base64 || '';
+      const cleanBase64 = rawAudio.replace(/^data:audio\/[a-z0-9]+;base64,/, '');
+      const buffer = Buffer.from(cleanBase64, 'base64');
+      const estimatedDuration = Math.max(2, text.split(' ').length / 2.5);
+
       return {
-        audioBuffer: Buffer.from(response.data),
-        duration: response.headers['x-duration'] || 0,
+        audioBuffer: buffer,
+        duration: estimatedDuration,
         format: 'mp3',
       };
-    } catch (error) {
-      console.error('TTS Error:', error);
-      throw new Error('Failed to synthesize speech');
+    } catch (error: any) {
+      console.error('TTS Error:', error.response?.data || error.message);
+      throw new Error(`Failed to synthesize speech: ${error.message}`);
     }
   }
 
@@ -138,17 +164,11 @@ class AddisAIClient {
     translation: number; // per 1000 chars
     tts: number; // per 1000 chars
   }> {
-    try {
-      const response = await this.client.get('/v1/pricing');
-      return response.data;
-    } catch (error) {
-      console.error('Pricing Error:', error);
-      return {
-        stt: 0.01,
-        translation: 0.0025,
-        tts: 0.015,
-      };
-    }
+    return {
+      stt: 0.01,
+      translation: 0.0025,
+      tts: 0.015,
+    };
   }
 }
 

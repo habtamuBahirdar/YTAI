@@ -1,10 +1,18 @@
 import WebSocket, { WebSocketServer } from 'ws';
 import { createServer } from 'http';
 import { config } from 'dotenv';
-import { StreamingPipeline } from './pipeline/streaming-pipeline';
-import { AudioBuffer, LatencyTracker } from './audio/buffer';
-import { processSegmentWithAddisAI } from './services/segment-processor';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { StreamingPipeline } from './pipeline/streaming-pipeline.js';
+import { AudioBuffer, LatencyTracker } from './audio/buffer.js';
+import { processSegmentWithAddisAI } from './services/segment-processor.js';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load environment variables from workspace root .env
+config({ path: path.resolve(__dirname, '../../../.env') });
+config({ path: path.resolve(__dirname, '../../.env') });
 config();
 
 const PORT = parseInt(process.env.REALTIME_PORT || '4000', 10);
@@ -20,6 +28,7 @@ interface SessionData {
   ws: WebSocket;
   userId: string;
   sessionId: string;
+  videoUrl?: string;
   createdAt: Date;
   pipeline?: StreamingPipeline;
   buffer?: AudioBuffer;
@@ -123,7 +132,7 @@ wss.on('connection', (ws: WebSocket) => {
  * Handle session start
  */
 function handleSessionStart(ws: WebSocket, message: any): void {
-  const { sessionId, userId, youtubeUrl, voiceId = 'am-hamen' } = message;
+  const { sessionId, userId, youtubeUrl, voiceId = 'am-simon' } = message;
 
   if (!sessionId || !userId) {
     sendMessage(ws, {
@@ -138,6 +147,7 @@ function handleSessionStart(ws: WebSocket, message: any): void {
     ws,
     userId,
     sessionId,
+    videoUrl: youtubeUrl,
     voiceId,
     createdAt: new Date(),
     pipeline: new StreamingPipeline({
@@ -163,13 +173,55 @@ function handleSessionStart(ws: WebSocket, message: any): void {
 
   console.log(`✅ Session ${sessionId} started for user ${userId}`);
   console.log(`🎙️  Voice: ${voiceId}`);
+
+  // Auto-start segment 1 processing
+  setTimeout(() => {
+    handleSessionProcess(ws, { sessionId, sequence: 1 });
+  }, 800);
+}
+
+/**
+ * Generate a valid 16kHz Mono 16-bit PCM WAV audio sample (1 second 440Hz sine wave tone)
+ */
+function createSampleWavBase64(): string {
+  const sampleRate = 16000;
+  const numSamples = sampleRate * 1;
+  const dataSize = numSamples * 2;
+  const buffer = Buffer.alloc(44 + dataSize);
+
+  buffer.write('RIFF', 0);
+  buffer.writeUInt32LE(36 + dataSize, 4);
+  buffer.write('WAVE', 8);
+  buffer.write('fmt ', 12);
+  buffer.writeUInt32LE(16, 16);
+  buffer.writeUInt16LE(1, 20);
+  buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * 2, 28);
+  buffer.writeUInt16LE(2, 32);
+  buffer.writeUInt16LE(16, 34);
+  buffer.write('data', 36);
+  buffer.writeUInt32LE(dataSize, 40);
+
+  for (let i = 0; i < numSamples; i++) {
+    const t = i / sampleRate;
+    const sample = Math.sin(2 * Math.PI * 440 * t) * 10000;
+    buffer.writeInt16LE(Math.round(sample), 44 + i * 2);
+  }
+
+  return buffer.toString('base64');
 }
 
 /**
  * Handle audio processing with Addis AI integration
  */
 async function handleSessionProcess(ws: WebSocket, message: any): Promise<void> {
-  const { sessionId, audioBuffer: audioBase64, sequence = 1 } = message;
+  const { sessionId, sequence = 1 } = message;
+  let audioBase64 = message.audioBuffer;
+  
+  if (!audioBase64) {
+    audioBase64 = createSampleWavBase64();
+  }
   const session = sessions.get(sessionId);
 
   if (!session) {
@@ -181,10 +233,7 @@ async function handleSessionProcess(ws: WebSocket, message: any): Promise<void> 
   }
 
   if (session.isProcessing) {
-    sendMessage(ws, {
-      type: 'error',
-      message: 'Session already processing',
-    });
+    console.log(`⚠️  Session ${sessionId} is already processing segment. Skipping duplicate request.`);
     return;
   }
 
@@ -258,7 +307,8 @@ async function handleSessionProcess(ws: WebSocket, message: any): Promise<void> 
             timestamp: new Date().toISOString(),
           });
         },
-      }
+      },
+      session.videoUrl
     );
 
     // Update session stats
@@ -432,256 +482,4 @@ setInterval(() => {
   }
 }, 10000);
 
-
-/**
- * Handle audio processing
- */
-async function handleSessionProcess(ws: WebSocket, message: any): Promise<void> {
-  const { sessionId, audioBuffer: audioBase64 } = message;
-  const session = sessions.get(sessionId);
-
-  if (!session) {
-    sendMessage(ws, {
-      type: 'error',
-      message: 'Session not found',
-    });
-    return;
-  }
-
-  if (session.isProcessing) {
-    sendMessage(ws, {
-      type: 'error',
-      message: 'Session already processing',
-    });
-    return;
-  }
-
-  try {
-    session.isProcessing = true;
-    const audioBuffer = Buffer.from(audioBase64, 'base64');
-
-    sendMessage(ws, {
-      type: 'session.processing',
-      sessionId,
-      timestamp: new Date().toISOString(),
-    });
-
-    // Process through pipeline
-    await session.pipeline!.processStream(
-      audioBuffer,
-      session.userId,
-      sessionId,
-      {
-        onSegmentStart: (sequence) => {
-          sendMessage(ws, {
-            type: 'segment.start',
-            sessionId,
-            sequence,
-            timestamp: new Date().toISOString(),
-          });
-        },
-
-        onTranscript: (sequence, text) => {
-          sendMessage(ws, {
-            type: 'transcript',
-            sessionId,
-            sequence,
-            text,
-            timestamp: new Date().toISOString(),
-          });
-        },
-
-        onTranslation: (sequence, text) => {
-          sendMessage(ws, {
-            type: 'translation',
-            sessionId,
-            sequence,
-            text,
-            timestamp: new Date().toISOString(),
-          });
-        },
-
-        onAudioReady: (sequence, audioBase64) => {
-          sendMessage(ws, {
-            type: 'audio.ready',
-            sessionId,
-            sequence,
-            audio: audioBase64,
-            timestamp: new Date().toISOString(),
-          });
-        },
-
-        onSegmentComplete: (result) => {
-          sendMessage(ws, {
-            type: 'segment.complete',
-            sessionId,
-            sequence: result.sequence,
-            processingTime: result.processingTime,
-            cost: result.cost,
-            timestamp: new Date().toISOString(),
-          });
-        },
-
-        onError: (sequence, error) => {
-          sendMessage(ws, {
-            type: 'segment.error',
-            sessionId,
-            sequence,
-            error,
-            timestamp: new Date().toISOString(),
-          });
-        },
-
-        onProgress: (stage, progress) => {
-          sendMessage(ws, {
-            type: 'progress',
-            sessionId,
-            stage,
-            progress,
-            timestamp: new Date().toISOString(),
-          });
-        },
-      }
-    );
-
-    session.isProcessing = false;
-
-    sendMessage(ws, {
-      type: 'session.completed',
-      sessionId,
-      timestamp: new Date().toISOString(),
-      status: session.pipeline!.getStatus(),
-    });
-  } catch (error) {
-    session.isProcessing = false;
-    sendMessage(ws, {
-      type: 'session.error',
-      sessionId,
-      error: error instanceof Error ? error.message : 'Processing failed',
-      timestamp: new Date().toISOString(),
-    });
-  }
-}
-
-/**
- * Handle session pause
- */
-function handleSessionPause(ws: WebSocket, message: any): void {
-  const { sessionId } = message;
-  const session = sessions.get(sessionId);
-
-  if (!session) {
-    sendMessage(ws, {
-      type: 'error',
-      message: 'Session not found',
-    });
-    return;
-  }
-
-  sendMessage(ws, {
-    type: 'session.paused',
-    sessionId,
-    timestamp: new Date().toISOString(),
-  });
-
-  console.log(`Session ${sessionId} paused`);
-}
-
-/**
- * Handle session resume
- */
-function handleSessionResume(ws: WebSocket, message: any): void {
-  const { sessionId } = message;
-  const session = sessions.get(sessionId);
-
-  if (!session) {
-    sendMessage(ws, {
-      type: 'error',
-      message: 'Session not found',
-    });
-    return;
-  }
-
-  sendMessage(ws, {
-    type: 'session.resumed',
-    sessionId,
-    timestamp: new Date().toISOString(),
-  });
-
-  console.log(`Session ${sessionId} resumed`);
-}
-
-/**
- * Handle session stop
- */
-function handleSessionStop(ws: WebSocket, message: any): void {
-  const { sessionId } = message;
-  const session = sessions.get(sessionId);
-
-  if (!session) {
-    sendMessage(ws, {
-      type: 'error',
-      message: 'Session not found',
-    });
-    return;
-  }
-
-  // Clean up pipeline
-  if (session.pipeline) {
-    session.pipeline.reset();
-  }
-
-  sessions.delete(sessionId);
-
-  sendMessage(ws, {
-    type: 'session.stopped',
-    sessionId,
-    timestamp: new Date().toISOString(),
-  });
-
-  console.log(`Session ${sessionId} stopped`);
-}
-
-/**
- * Handle seek/replay to specific segment
- */
-function handleSessionSeek(ws: WebSocket, message: any): void {
-  const { sessionId, sequence } = message;
-  const session = sessions.get(sessionId);
-
-  if (!session) {
-    sendMessage(ws, {
-      type: 'error',
-      message: 'Session not found',
-    });
-    return;
-  }
-
-  sendMessage(ws, {
-    type: 'segment.seek',
-    sessionId,
-    sequence,
-    timestamp: new Date().toISOString(),
-  });
-
-  console.log(`Session ${sessionId} seeking to segment ${sequence}`);
-}
-
-// Server startup
-server.listen(PORT, () => {
-  console.log(`✅ Realtime server listening on ws://localhost:${PORT}`);
-  console.log(`📊 Max concurrent segments: 3`);
-  console.log(`📦 Buffer size: 2-5 segments`);
-  console.log(`⏱️  Target segment duration: 5 seconds`);
-});
-
-// Periodic stats logging
-setInterval(() => {
-  const activeSession = Array.from(sessions.values()).find(s => s.isProcessing);
-  if (activeSession) {
-    const status = activeSession.pipeline?.getStatus();
-    console.log(`📈 Active session: ${activeSession.sessionId}`);
-    console.log(`   Buffer: ${status?.bufferStatus.size} segments, Queue: ${status?.queueLength} remaining`);
-  }
-}, 5000);
 

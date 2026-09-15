@@ -107,7 +107,10 @@ export default function NewDubbingPage() {
       }
 
       const { sessionId } = await response.json();
-      router.push(`/dub/${sessionId}`);
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(`session_${sessionId}_url`, url);
+      }
+      router.push(`/dub/${sessionId}?url=${encodeURIComponent(url)}`);
     } catch (err) {
       setError('Failed to start dubbing session');
       setProcessing(false);
