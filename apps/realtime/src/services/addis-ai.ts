@@ -148,7 +148,7 @@ export async function translate(request: TranslationRequest): Promise<Translatio
  * Convert Amharic text to audio
  */
 export async function textToSpeech(request: TTSRequest): Promise<TTSResponse> {
-  const maxRetries = 4;
+  const maxRetries = 8;
   let attempt = 0;
 
   while (attempt < maxRetries) {
@@ -173,14 +173,22 @@ export async function textToSpeech(request: TTSRequest): Promise<TTSResponse> {
       });
 
       if (res.status === 429 && attempt < maxRetries) {
-        console.warn(`[TTS 429 Rate Limit] Concurrency limit hit. Retrying in ${attempt * 1500}ms (Attempt ${attempt}/${maxRetries})...`);
-        await new Promise(r => setTimeout(r, attempt * 1500));
+        const backoffMs = attempt * 2500;
+        console.warn(`[TTS 429 Rate Limit] Concurrency limit hit. Retrying in ${backoffMs}ms (Attempt ${attempt}/${maxRetries})...`);
+        await new Promise(r => setTimeout(r, backoffMs));
         continue;
       }
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        throw new Error(`HTTP ${res.status}: ${JSON.stringify(errData)}`);
+        const errStr = JSON.stringify(errData);
+        if ((res.status === 429 || errStr.includes('CONCURRENT')) && attempt < maxRetries) {
+          const backoffMs = attempt * 2500;
+          console.warn(`[TTS Concurrency Limit] Retrying in ${backoffMs}ms (Attempt ${attempt}/${maxRetries})...`);
+          await new Promise(r => setTimeout(r, backoffMs));
+          continue;
+        }
+        throw new Error(`HTTP ${res.status}: ${errStr}`);
       }
 
       const data: any = await res.json();
@@ -194,11 +202,14 @@ export async function textToSpeech(request: TTSRequest): Promise<TTSResponse> {
         duration: Math.max(2, request.text.split(' ').length / 2.5),
       };
     } catch (error: any) {
-      if (attempt >= maxRetries || !error.message.includes('429')) {
-        console.error('TTS Error:', error.message);
-        throw new Error(`TTS failed: ${error.message}`);
+      if (attempt < maxRetries && (error.message.includes('429') || error.message.includes('CONCURRENT'))) {
+        const backoffMs = attempt * 2500;
+        console.warn(`[TTS Concurrency Limit Exception] Retrying in ${backoffMs}ms...`);
+        await new Promise(r => setTimeout(r, backoffMs));
+        continue;
       }
-      await new Promise(r => setTimeout(r, attempt * 1500));
+      console.error('TTS Error:', error.message);
+      throw new Error(`TTS failed: ${error.message}`);
     }
   }
 

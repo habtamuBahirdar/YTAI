@@ -95,18 +95,28 @@ export async function fetchYouTubeTranscript(urlOrId: string): Promise<Transcrip
   }
 }
 
+export async function getYouTubeVideoTotalSegments(urlOrId: string): Promise<number> {
+  const items = await fetchYouTubeTranscript(urlOrId);
+  if (items && items.length > 0) {
+    const lastItem = items[items.length - 1];
+    const totalDurationMs = lastItem.offset + lastItem.duration;
+    // 8-second time windows per segment
+    return Math.max(1, Math.ceil(totalDurationMs / 8000));
+  }
+  return 10;
+}
+
 export async function getRealYouTubeSegmentText(urlOrId: string, sequence: number = 1): Promise<string> {
   const videoId = extractVideoId(urlOrId);
   const items = await fetchYouTubeTranscript(urlOrId);
 
   if (items && items.length > 0) {
-    // Segment sequence 1 = 0-6s, sequence 2 = 6-12s, sequence 3 = 12-18s, etc.
-    const windowStartMs = (sequence - 1) * 6000;
-    const windowEndMs = windowStartMs + 8000;
+    // 8-second segment time window
+    const windowStartMs = (sequence - 1) * 8000;
+    const windowEndMs = windowStartMs + 10000;
 
     const matchingItems = items.filter(item => {
-      const itemEnd = item.offset + item.duration;
-      return item.offset >= windowStartMs - 2000 && item.offset <= windowEndMs;
+      return item.offset >= windowStartMs - 1500 && item.offset <= windowEndMs;
     });
 
     if (matchingItems.length > 0) {
@@ -137,5 +147,6 @@ export default {
   extractVideoId,
   fetchYouTubeInfo,
   fetchYouTubeTranscript,
+  getYouTubeVideoTotalSegments,
   getRealYouTubeSegmentText,
 };

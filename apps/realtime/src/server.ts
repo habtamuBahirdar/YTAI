@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { StreamingPipeline } from './pipeline/streaming-pipeline.js';
 import { AudioBuffer, LatencyTracker } from './audio/buffer.js';
 import { processSegmentWithAddisAI } from './services/segment-processor.js';
+import { getYouTubeVideoTotalSegments } from './services/youtube-fetcher.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -33,9 +34,11 @@ interface SessionData {
   pipeline?: StreamingPipeline;
   buffer?: AudioBuffer;
   isProcessing: boolean;
+  isPaused?: boolean;
   voiceId: string;
   totalCost: number;
   processedSegments: number;
+  totalSegments?: number;
 }
 
 const sessions = new Map<string, SessionData>();
@@ -328,12 +331,45 @@ async function handleSessionProcess(ws: WebSocket, message: any): Promise<void> 
       timestamp: new Date().toISOString(),
     });
 
-    console.log(`✅ Segment ${sequence} completed`);
-    console.log(`   STT: ${result.latency.stt}ms | Translation: ${result.latency.translation}ms | TTS: ${result.latency.tts}ms`);
-    console.log(`   Total latency: ${result.latency.total}ms`);
-    console.log(`   Cost: $${result.cost.total.toFixed(6)} (Total: $${session.totalCost.toFixed(6)})`);
-
     session.isProcessing = false;
+
+    // Check total segments & auto-advance to next segment if available
+    let totalSegs = session.totalSegments;
+    if (!totalSegs && session.videoUrl) {
+      totalSegs = await getYouTubeVideoTotalSegments(session.videoUrl);
+      session.totalSegments = totalSegs;
+    }
+    if (!totalSegs || totalSegs < 1) totalSegs = 10;
+
+    const progressPct = Math.min(100, Math.round((sequence / totalSegs) * 100));
+    sendMessage(ws, {
+      type: 'progress',
+      sessionId,
+      stage: 'dubbing',
+      progress: progressPct,
+      timestamp: new Date().toISOString(),
+    });
+
+    if (sequence < totalSegs && !session.isPaused && sessions.has(sessionId)) {
+      console.log(`⏩ Auto-advancing session ${sessionId} to segment ${sequence + 1} of ${totalSegs}...`);
+      setTimeout(() => {
+        const activeSess = sessions.get(sessionId);
+        if (activeSess && !activeSess.isPaused && ws.readyState === WebSocket.OPEN) {
+          handleSessionProcess(ws, { sessionId, sequence: sequence + 1 });
+        }
+      }, 2000);
+    } else if (sequence >= totalSegs) {
+      console.log(`🎉 Session ${sessionId} completed all ${totalSegs} segments!`);
+      sendMessage(ws, {
+        type: 'session.completed',
+        sessionId,
+        stats: {
+          processedSegments: session.processedSegments,
+          totalCost: session.totalCost,
+        },
+        timestamp: new Date().toISOString(),
+      });
+    }
   } catch (error) {
     session.isProcessing = false;
     const errorMessage = error instanceof Error ? error.message : 'Processing failed';
@@ -365,6 +401,8 @@ function handleSessionPause(ws: WebSocket, message: any): void {
     return;
   }
 
+  session.isPaused = true;
+
   sendMessage(ws, {
     type: 'session.paused',
     sessionId,
@@ -389,6 +427,8 @@ function handleSessionResume(ws: WebSocket, message: any): void {
     return;
   }
 
+  session.isPaused = false;
+
   sendMessage(ws, {
     type: 'session.resumed',
     sessionId,
@@ -396,6 +436,10 @@ function handleSessionResume(ws: WebSocket, message: any): void {
   });
 
   console.log(`▶️  Session ${sessionId} resumed`);
+
+  // Continue processing from next segment
+  const nextSeq = session.processedSegments + 1;
+  handleSessionProcess(ws, { sessionId, sequence: nextSeq });
 }
 
 /**

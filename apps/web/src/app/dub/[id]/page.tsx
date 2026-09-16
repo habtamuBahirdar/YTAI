@@ -93,6 +93,15 @@ function DubbingPlayerInner() {
 
           source.onended = () => {
             setIsPlaying(false);
+            // Auto play next segment if available
+            setState(prev => {
+              const nextSeq = prev.currentSegment + 1;
+              const nextAudio = audioQueueRef.current.get(nextSeq);
+              if (nextAudio) {
+                setTimeout(() => playAudioBase64(nextAudio), 200);
+              }
+              return prev;
+            });
           };
           return;
         } catch (decodeErr) {
